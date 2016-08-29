@@ -16,6 +16,7 @@
 """
 
 import bson
+import json
 import logging
 try:
     import Queue as queue
@@ -82,6 +83,9 @@ class OplogThread(threading.Thread):
 
         # Whether the collection dump gracefully handles exceptions
         self.continue_on_error = kwargs.get('continue_on_error', False)
+
+        with open('applications.json') as app_config:    
+            self.applications = json.load(app_config)
 
         # Set of fields to export
         self._exclude_fields = set([])
@@ -257,6 +261,9 @@ class OplogThread(threading.Thread):
                         if coll.endswith('.chunks'):
                             continue
 
+                        # if not coll.endswith("nodes"):
+                        #     continue
+
                         is_gridfs_file = False
                         if coll.endswith(".files"):
                             if ns in self.gridfs_files_set:
@@ -280,8 +287,11 @@ class OplogThread(threading.Thread):
                                 LOG.debug("OplogThread: Operation for this "
                                           "entry is %s" % str(operation))
 
+                                
+
                                 # Remove
                                 if operation == 'd':
+
                                     docman.remove(
                                         entry['o']['_id'], ns, timestamp)
                                     remove_inc += 1
@@ -291,32 +301,39 @@ class OplogThread(threading.Thread):
                                     # Retrieve inserted document from
                                     # 'o' field in oplog record
                                     doc = entry.get('o')
+                                    app_doc, docman = self.filter_by_app(doc, docman)
                                     # Extract timestamp and namespace
-                                    if is_gridfs_file:
-                                        db, coll = ns.split('.', 1)
-                                        gridfile = GridFSFile(
-                                            self.primary_client[db][coll],
-                                            doc)
-                                        docman.insert_file(
-                                            gridfile, ns, timestamp)
-                                    else:
-                                        docman.upsert(doc, ns, timestamp)
-                                    upsert_inc += 1
+                                    if app_doc is not None:
+                                        if is_gridfs_file:
+                                            db, coll = ns.split('.', 1)
+                                            gridfile = GridFSFile(
+                                                self.primary_client[db][coll],
+                                                doc)
+                                            docman.insert_file(
+                                                gridfile, ns, timestamp)
+                                        else:
+                                            docman.upsert(doc, ns, timestamp)
+                                        upsert_inc += 1
 
                                 # Update
                                 elif operation == 'u':
-                                    docman.update(entry['o2']['_id'],
-                                                  entry['o'],
-                                                  ns, timestamp)
-                                    update_inc += 1
+                                    doc = entry.get('o')
+                                    app_doc, docman = self.filter_by_app(doc, docman)
+                                    if app_doc is not None:
+                                        docman.update(entry['o2']['_id'],
+                                                      entry['o'],
+                                                      ns, timestamp)
+                                        update_inc += 1
 
                                 # Command
                                 elif operation == 'c':
-                                    # use unmapped namespace
                                     doc = entry.get('o')
-                                    docman.handle_command(doc,
-                                                          entry['ns'],
-                                                          timestamp)
+                                    app_doc, docman = self.filter_by_app(doc, docman)
+                                    # use unmapped namespace
+                                    if app_doc is not None:
+                                        docman.handle_command(doc,
+                                                              entry['ns'],
+                                                              timestamp)
 
                             except errors.OperationFailed:
                                 LOG.exception(
@@ -451,6 +468,14 @@ class OplogThread(threading.Thread):
             entry['o'] = filter_fields(entry_o)
 
         return entry
+
+    def filter_by_app(self, doc, docman):
+        print doc
+        if str(doc['app_id']) in self.applications:
+            docman.set_index(self.applications[str(doc['app_id'])]['index'])
+            return doc, docman
+        else:
+            return None, docman
 
     def get_oplog_cursor(self, timestamp=None):
         """Get a cursor to the oplog after the given timestamp, excluding
