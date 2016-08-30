@@ -470,8 +470,7 @@ class OplogThread(threading.Thread):
         return entry
 
     def filter_by_app(self, doc, docman):
-        print doc
-        if str(doc['app_id']) in self.applications:
+        if 'app_id' in doc and str(doc['app_id']) in self.applications:
             docman.set_index(self.applications[str(doc['app_id'])]['index'])
             return doc, docman
         else:

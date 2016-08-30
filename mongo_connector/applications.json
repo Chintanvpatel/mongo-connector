@@ -1,11 +1,14 @@
 {
 	"5302a4142157bad694b7aed8": {
-		"index": "index_name1"
+		"index": "index_name1",
+		"query": {}
 	},
 	"5302a4142157bad694b7aed9": {
-		"index": "index_name2"
+		"index": "index_name2",
+		"query": {}
 	},
 	"5302a4142157bad694b7aedf": {
-		"index": "index_name3"
+		"index": "index_name3",
+		"query": {}
 	}
 }

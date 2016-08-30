@@ -28,6 +28,7 @@ import time
 from mongo_connector import config, constants, errors, util
 from mongo_connector.locking_dict import LockingDict
 from mongo_connector.oplog_manager import OplogThread
+from mongo_connector.db_manager import DBThread
 from mongo_connector.doc_managers import doc_manager_simulator as simulator
 from mongo_connector.doc_managers.doc_manager_base import DocManagerBase
 from mongo_connector.command_helper import CommandHelper
@@ -83,6 +84,9 @@ class Connector(threading.Thread):
 
         # Timezone awareness
         self.tz_aware = kwargs.get('tz_aware', False)
+
+        # Use oplog collection
+        self.use_oplog = kwargs.get('use_oplog', False)
 
         # SSL keyword arguments to MongoClient.
         ssl_certfile = kwargs.pop('ssl_certfile', None)
@@ -162,7 +166,10 @@ class Connector(threading.Thread):
             ssl_keyfile=config['ssl.sslKeyfile'],
             ssl_ca_certs=config['ssl.sslCACerts'],
             ssl_cert_reqs=config['ssl.sslCertificatePolicy'],
-            tz_aware=config['timezoneAware']
+            tz_aware=config['timezoneAware'],
+            database_name=config['database_name'],
+            collection_name=config['collection_name'],
+            oplog_use=config['oplog_use']
         )
         return connector
 
@@ -269,15 +276,17 @@ class Connector(threading.Thread):
         except pymongo.errors.OperationFailure:
             conn_type = "REPLSET"
 
-        if conn_type == "REPLSET":
+        is_master = main_conn.admin.command("isMaster")
+
+        if conn_type == "REPLSET" and "setName" in is_master:
             # Make sure we are connected to a replica set
-            is_master = main_conn.admin.command("isMaster")
-            if "setName" not in is_master:
-                LOG.error(
-                    'No replica set at "%s"! A replica set is required '
-                    'to run mongo-connector. Shutting down...' % self.address
-                )
-                return
+            LOG.info("Connection to replicaset")
+            # if "setName" not in is_master:
+            #     LOG.error(
+            #         'No replica set at "%s"! A replica set is required '
+            #         'to run mongo-connector. Shutting down...' % self.address
+            #     )
+            #     return
 
             # Establish a connection to the replica set as a whole
             main_conn.close()
@@ -287,14 +296,21 @@ class Connector(threading.Thread):
             if self.auth_key is not None:
                 main_conn.admin.authenticate(self.auth_username, self.auth_key)
 
+            if self.use_oplog is True:
             # non sharded configuration
-            oplog = OplogThread(
-                main_conn, self.doc_managers, self.oplog_progress,
-                **self.kwargs)
-            self.shard_set[0] = oplog
-            LOG.info('MongoConnector: Starting connection thread %s' %
-                     main_conn)
-            oplog.start()
+                oplog = OplogThread(
+                    main_conn, self.doc_managers, self.oplog_progress,
+                    **self.kwargs)
+                self.shard_set[0] = oplog
+                LOG.info('MongoConnector: Starting connection thread %s' %
+                         main_conn)
+                oplog.start()
+            else:
+                db = DBThread(main_conn, self.doc_managers,**self.kwargs)
+                self.shard_set[0] = db
+                LOG.info('MongoConnector: Starting connection thread %s' %
+                         main_conn)
+                db.start()
 
             while self.can_run:
                 shard_thread = self.shard_set[0]
@@ -308,6 +324,38 @@ class Connector(threading.Thread):
                     return
 
                 self.write_oplog_progress()
+                time.sleep(1)
+
+        elif conn_type == "REPLSET" and "setName" not in is_master:
+            LOG.info("Connection to single server")
+            main_conn.close()
+
+            # Establish new connection
+            main_conn = MongoClient(
+                self.address,
+                tz_aware=self.tz_aware, **self.ssl_kwargs)
+            if self.auth_key is not None:
+                main_conn.admin.authenticate(self.auth_username, self.auth_key)
+
+            db = DBThread(
+                main_conn, self.doc_managers,
+                **self.kwargs)
+            self.shard_set[0] = db
+            LOG.info('MongoConnector: Starting connection thread %s' %
+                     main_conn)
+            db.start()
+
+            while self.can_run:
+                shard_thread = self.shard_set[0]
+                if not (shard_thread.running and shard_thread.is_alive()):
+                    LOG.error("MongoConnector: DBThread"
+                              " %s unexpectedly stopped! Shutting down" %
+                              (str(self.shard_set[0])))
+                    self.oplog_thread_join()
+                    for dm in self.doc_managers:
+                        dm.stop()
+                    return
+
                 time.sleep(1)
 
         else:       # sharded cluster
@@ -1003,6 +1051,45 @@ def get_config_options():
     tz_aware.add_cli(
         "--tz-aware", dest="tz_aware", action="store_true",
         help="Make all dates and times timezone-aware.")
+
+    collection_name = add_option(
+        config_key="collection_name",
+        default="test",
+        type=str)
+
+    # -m is for the main address, which is a host:port pair, ideally of the
+    # mongos. For non sharded clusters, it can be the primary.
+    collection_name.add_cli(
+        "-k", "--collection", dest="collection_name", help=
+        "Specify the collection name from which"
+        " you want to sync data For example, `-k nodes`"
+        " default value is test.")
+
+    database_name = add_option(
+        config_key="database_name",
+        default="t",
+        type=str)
+
+    # -m is for the main address, which is a host:port pair, ideally of the
+    # mongos. For non sharded clusters, it can be the primary.
+    database_name.add_cli(
+        "-j", "--database", dest="database_name", help=
+        "Specify the database name of collection from which"
+        " you want to sync data For example, `-j d`"
+        " default value is t.")
+
+    oplog_use = add_option(
+        config_key="oplog_use",
+        default=False,
+        type=bool)
+
+    # -m is for the main address, which is a host:port pair, ideally of the
+    # mongos. For non sharded clusters, it can be the primary.
+    oplog_use.add_cli(
+        "-l", "--oplog", dest="oplog_use", help=
+        "Specify the database name of collection from which"
+        " you want to sync data For example, `-l false`"
+        " default value is false.")
 
     return result
 
