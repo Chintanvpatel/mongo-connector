@@ -1,5 +1,31 @@
 For complete documentation, check out the `Mongo Connector Wiki <https://github.com/10gen-labs/mongo-connector/wiki>`__.
 
+Update
+---------------
+
+mongo-connector supports single primary mongod server by default. Use --oplog to support replicaset 
+oplog. 
+New options are  ``-j <database_name> -k <collection_name>`` 
+Configuration file::
+	{
+		"5302a4142157bad694b7aed8": {
+			"index": "index_name1",
+			"query": {"_id":{"$oid":"56b9817041633a0100940a5a"}}
+		},
+		"5302a4142157bad694b7aed9": {
+			"index": "index_name2",
+			"query": {"_id":{"$oid":"56b992e7d0682501008d6955"}}
+		},
+		"5302a4142157bad694b7aedf": {
+			"index": "index_name3",
+			"query": {}
+		}
+	}
+
+For above configuration mongo-connector will create three indices if any record found for defined query.
+Example ::
+ mongo-connector -m 127.0.0.1:27017 -t localhost:9200 -d elastic2_doc_manager -v -j dev -k apps
+
 System Overview
 ---------------
 
