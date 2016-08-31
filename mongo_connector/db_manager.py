@@ -30,6 +30,8 @@ import pymongo
 
 from pymongo import CursorType
 from bson.objectid import ObjectId
+from bson.json_util import loads
+from bson.json_util import dumps
 
 from mongo_connector import errors, util
 from mongo_connector.constants import DEFAULT_BATCH_SIZE
@@ -203,58 +205,61 @@ class DBThread(threading.Thread):
             for app_id, config in self.applications.iteritems():
                 LOG.debug("OplogThread: Getting cursor for %s" % (app_id))
                 cursor = self.get_db_cursor(app_id, config)
+                if (cursor.count() is not 0):
+                    upsert_inc = 0
+                    try:
+                        LOG.debug("DBThread: about to process new oplog "
+                                  "entries")
+                        while cursor.alive and self.running:
+                            LOG.debug("DBThread: Cursor is still"
+                                      " alive and thread is still running.")
+                            for n, entry in enumerate(cursor):
 
-                upsert_inc = 0
-                try:
-                    LOG.debug("DBThread: about to process new oplog "
-                              "entries")
-                    while cursor.alive and self.running:
-                        LOG.debug("DBThread: Cursor is still"
-                                  " alive and thread is still running.")
-                        for n, entry in enumerate(cursor):
+                                LOG.debug("DBThread: Iterating through cursor,"
+                                          " document number in this cursor is %d"
+                                          % n)
+                                # Break out if this thread should stop
+                                if not self.running:
+                                    break
 
-                            LOG.debug("DBThread: Iterating through cursor,"
-                                      " document number in this cursor is %d"
-                                      % n)
-                            # Break out if this thread should stop
-                            if not self.running:
-                                break
+                                # Ignore the collection if it is not included
+                                if self.oplog_ns_set and ns not in self.oplog_ns_set:
+                                    LOG.debug("OplogThread: Skipping oplog entry: "
+                                              "'%s' is not in the namespace set." %
+                                              (ns,))
+                                    continue
 
-                            # Ignore the collection if it is not included
-                            if self.oplog_ns_set and ns not in self.oplog_ns_set:
-                                LOG.debug("OplogThread: Skipping oplog entry: "
-                                          "'%s' is not in the namespace set." %
-                                          (ns,))
-                                continue
+                                # use namespace mapping if one exists
+                                ns = "%s.%s" % (self.database_name, self.collection_name)
+                                timestamp = time.time()
+                                for docman in self.doc_managers:
+                                    self.set_index_name(app_id, docman)
+                                    try:                            
+                                        docman.upsert(entry, ns, timestamp)
+                                        upsert_inc += 1
 
-                            # use namespace mapping if one exists
-                            ns = "%s.%s" % (self.database_name, self.collection_name)
-                            timestamp = time.time()
-                            for docman in self.doc_managers:
-                                self.set_index_name(app_id, docman)
-                                try:                            
-                                    docman.upsert(entry, ns, timestamp)
-                                    upsert_inc += 1
+                                    except errors.OperationFailed:
+                                        LOG.exception(
+                                            "Unable to process oplog document %r"
+                                            % entry)
+                                    except errors.ConnectionFailed:
+                                        LOG.exception(
+                                            "Connection failed while processing oplog "
+                                            "document %r" % entry)
 
-                                except errors.OperationFailed:
-                                    LOG.exception(
-                                        "Unable to process oplog document %r"
-                                        % entry)
-                                except errors.ConnectionFailed:
-                                    LOG.exception(
-                                        "Connection failed while processing oplog "
-                                        "document %r" % entry)
+                    except (pymongo.errors.AutoReconnect,
+                            pymongo.errors.OperationFailure,
+                            pymongo.errors.ConfigurationError):
+                        LOG.exception(
+                            "Cursor closed due to an exception. "
+                            "Will attempt to reconnect.")
 
-                except (pymongo.errors.AutoReconnect,
-                        pymongo.errors.OperationFailure,
-                        pymongo.errors.ConfigurationError):
-                    LOG.exception(
-                        "Cursor closed due to an exception. "
-                        "Will attempt to reconnect.")
-
-                LOG.debug("OplogThread: Sleeping. Documents "
-                          "upserted: %d"
-                          % (upsert_inc))
+                    LOG.debug("DBThread: Documents "
+                              "upserted: %d for application %s"
+                              % (upsert_inc, app_id))
+                    print("DBThread: Documents "
+                              "upserted: %d for application %s"
+                              % (upsert_inc, app_id))
             self.running = False
 
     def join(self):
@@ -348,6 +353,7 @@ class DBThread(threading.Thread):
     def get_db_cursor(self, app_id, config):
         # Get cursor to iterate
         query = config['query'] or {}
+        query = loads(dumps(query))
         cursor = self.db.find(query)
         #docman.set_index(config['index'])
         return cursor

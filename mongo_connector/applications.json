@@ -1,11 +1,11 @@
 {
 	"5302a4142157bad694b7aed8": {
 		"index": "index_name1",
-		"query": {}
+		"query": {"_id":{"$oid":"56b9817041633a0100940a5a"}}
 	},
 	"5302a4142157bad694b7aed9": {
 		"index": "index_name2",
-		"query": {}
+		"query": {"_id":{"$oid":"56b992e7d0682501008d6955"}}
 	},
 	"5302a4142157bad694b7aedf": {
 		"index": "index_name3",
